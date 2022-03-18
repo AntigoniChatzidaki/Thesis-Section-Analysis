@@ -1,0 +1,5 @@
+/venv/
+/bkup*
+/.ipynb_checkpoints/
+/__pycache__/
+
