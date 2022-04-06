@@ -8,7 +8,7 @@ from Materials import Material, Concrete
 from Sections import Rectangular, Section, HollowRectangular
 
 frp = Material('FRP', 600e6, 80e9, 'black')
-concrete = Concrete('Concrete', 37e9, 50e6, 'gray', confined=False, frp=frp)
+concrete = Concrete('Concrete', 37e9, 50e6, 'gray', confining_steel=False, frp=frp)
 steel = Material('Steel', 190e9, 450e6, 'blue')  # Pa
 
 
@@ -43,7 +43,7 @@ steel = Material('Steel', 190e9, 450e6, 'blue')  # Pa
 #         else:
 #             steel_stress = steel.strength * abs(strain_slice) / strain_slice
 #         # concrete stress
-#         if concrete.confined:
+#         if concrete.confining_steel:
 #             if strain_slice < 0:
 #                 concrete_stress = 0
 #             elif strain_slice < concrete.top_strain:
@@ -87,22 +87,22 @@ steel = Material('Steel', 190e9, 450e6, 'blue')  # Pa
 
 # TESTS
 
-test_concrete_section = HollowRectangular(concrete, 0.600, 0.600, 0.34, 0.34, 0.130)
-test_concrete_section.add_reinforcements(steel, 0.02, [(0.065,0.065) , (0.535,0.065) , (0.065,0.535) , (0.535,0.535) , (0.1825,0.065) , (0.065,0.1825) , (0.535,0.1825) , (0.1825,0.535) , (0.3,0.065) , (0.065,0.3) , (0.3,0.535) , (0.535,0.3) , (0.4175,0.065) , (0.065,0.4175) , (0.4175,0.535) , (0.535,0.4175)
+test_section = HollowRectangular(concrete, 0.600, 0.600, 0.34, 0.34, 0.130)
+test_section.add_reinforcements(steel, 0.016, [(0.065,0.065) , (0.535,0.065) , (0.065,0.535) , (0.535,0.535) , (0.1825,0.065) , (0.065,0.1825) , (0.535,0.1825) , (0.1825,0.535) , (0.3,0.065) , (0.065,0.3) , (0.3,0.535) , (0.535,0.3) , (0.4175,0.065) , (0.065,0.4175) , (0.4175,0.535) , (0.535,0.4175)
 ])
 # test_concrete_section = Rectangular(concrete, 0.600, 0.600)
 # test_concrete_section.add_reinforcements(steel, 0.02, [(0.065,0.065) , (0.535,0.065) , (0.065,0.535) , (0.535,0.535)])
 
-test_concrete_section.generate_slices()
-test_concrete_section.calculate_neutral_axis(670e3, concrete, steel)
-print(test_concrete_section.neutral_axis)
-print(test_concrete_section.slices.dtypes)
+test_section.generate_slices()
+test_section.calculate_neutral_axis(670e3, concrete, steel)
+print(test_section.neutral_axis)
+print(test_section.slices.dtypes)
 #test_concrete_section.slices.to_csv("output.csv")
 
 fig, axs = plt.subplots(1, 4, sharey=True, squeeze=True)
 axs[0].invert_yaxis()
 
-test_concrete_section.plot(axs[0])
+test_section.plot(axs[0])
 
 
 plt.show()
@@ -115,7 +115,7 @@ sys.exit()
 
 # test_concrete_section.add_reinforcements(steel, 0.016, [(0.065, 0.049), (0.3, 0.049), (0.535, 0.049)])
 
-test_concrete_section.plot(sections_ax)
+test_section.plot(sections_ax)
 #  (steel, 0.016, [(0.065, 0.049), (0.3, 0.0535), (0.5875, 0.049)])
 
 ys = np.arange(0, 1, 0.001)

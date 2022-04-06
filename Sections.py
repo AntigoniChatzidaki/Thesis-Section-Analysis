@@ -99,6 +99,15 @@ class Section:
     def __add__(self, other):
         return Section(self.polygons | other.polygons)
 
+    def get_y_limits(self):
+        # Find bounds of whole section
+        min_y = 999
+        max_y = -999
+        for material, polygon in self.polygons.items():
+            min_y = min(polygon.bounds[1], min_y)
+            max_y = max(polygon.bounds[3], max_y)
+        return min_y, max_y
+
     def get_areas_of_slice(self, offset_y: float, step: float) -> Dict[Material, float]:
         slice = Polygon(rectangle(2e3, step, -1e3, offset_y))
         out = {}
@@ -127,12 +136,7 @@ class Section:
             self.materials.append(reinf_material)
 
     def generate_slices(self, step=0.5e-3):
-        # Find bounds of whole section
-        min_y = 999
-        max_y = -999
-        for material, polygon in self.polygons.items():
-            min_y = min(polygon.bounds[1], min_y)
-            max_y = max(polygon.bounds[3], max_y)
+        min_y, max_y = self.get_y_limits()
 
         heights = np.arange(min_y + step, max_y, step)
         mid_heights = [y - step / 2 for y in heights]
@@ -145,7 +149,10 @@ class Section:
             {
                 'height': heights,
                 'mid_height': mid_heights,
-                **{mat.name+"_area": area for mat, area in areas.items()}
+                **{
+                    mat.__class__.__name__ + "_area": area
+                    for mat, area in areas.items()
+                }
             }
         )
 
@@ -160,16 +167,16 @@ class Section:
 
         def steel_stress_fun(slice):
             if slice.Steel_area > 0:
-                if abs(slice.strain) < steel.strength / steel.youngs_modulus:
-                    steel_stress = slice.strain / steel.youngs_modulus
+                if abs(slice.strain) < steel.strength / 1.15 / steel.youngs_modulus:
+                    steel_stress = slice.strain * steel.youngs_modulus
                 else:
-                    steel_stress = steel.strength * abs(slice.strain) / slice.strain
+                    steel_stress = steel.strength / 1.15 * abs(slice.strain) / slice.strain
             else:
                 steel_stress = 0
             return steel_stress
 
         def concrete_stress_fun(slice):
-            if concrete.confined:
+            if concrete.confining_steel is not None:
                 if slice.strain < 0:
                     concrete_stress = 0
                 elif slice.strain < concrete.top_strain:
@@ -198,7 +205,11 @@ class Section:
         self.slices['steel_force'] = self.slices.steel_stress * self.slices.Steel_area
         self.slices['concrete_force'] = self.slices.concrete_stress * self.slices.Concrete_area
         self.slices['total_force'] = self.slices.steel_force + self.slices.concrete_force
-        self.slices['total_moment'] = self.slices.total_force * (self.neutral_axis - self.slices.mid_height)
+        min_y, max_y = self.get_y_limits()
+        mid_height = (max_y + min_y) / 2
+        self.slices['total_moment'] = self.slices.total_force * (mid_height - (self.slices.mid_height))
+        self.slices['steel_moment'] = self.slices.steel_force * (mid_height - (self.slices.mid_height))
+
 
         total_force = self.slices.total_force.sum()
         sum_force = total_force - axial_force
@@ -269,6 +280,7 @@ class HollowCircular(Section):
                  outer_diameter: float, thickness: float,
                  offset_x: float, offset_y: float):
         inner_diameter = outer_diameter - 2 * thickness
+        # put cylinder in the middle, otherwise add offset
 
         polygons = {material: Polygon(
             circle(outer_diameter, offset_x, offset_y),
