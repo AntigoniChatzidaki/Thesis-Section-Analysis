@@ -27,8 +27,6 @@ class Steel(Material):
 
 class Concrete(Material):
     confining_steel: Steel
-    frp: Material
-    frp_thickness: float = None
     concrete_width: float = None
     concrete_height: float = None
     total_height: float = None
@@ -39,22 +37,21 @@ class Concrete(Material):
     design_strength: float = None
     n: float = None
 
-    def __init__(self, name, youngs_modulus, strength, color, confining_steel, frp):
+    def __init__(self, name, youngs_modulus, strength, color, confining_steel):
         super().__init__(name, youngs_modulus, strength, color)
         self.confining_steel = confining_steel
-        self.frp = frp
         # Values from eurocode
         a_cc = 0.85
         gamma_c = 1.5
         design_strength = a_cc * self.strength / gamma_c
-        if design_strength / 10e6 < 50:
+        if design_strength / 1e6 < 50:
             n = 2
             e_cu2 = 0.0035
             e_c2 = 0.002
         else:
-            n = 1.4 + 23.4 * ((90 - design_strength / 10e6) / 100) ** 4
-            e_cu2 = (2.6 + 35 * ((90 - design_strength / 10e6) / 100) ** 4) / 1000
-            e_c2 = (2.0 + 0.085 * (design_strength / 10e6 - 50) ** 0.53) / 1000
+            n = 1.4 + 23.4 * ((90 - design_strength / 1e6) / 100) ** 4
+            e_cu2 = (2.6 + 35 * ((90 - design_strength / 1e6) / 100) ** 4) / 1000
+            e_c2 = (2.0 + 0.085 * (design_strength / 1e6 - 50) ** 0.53) / 1000
         if self.confining_steel is None:
             total_height = self.concrete_height
             self.ultimate_strain = e_cu2

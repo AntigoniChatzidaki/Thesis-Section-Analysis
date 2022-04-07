@@ -1,4 +1,4 @@
-from typing import List, Tuple, Dict, Union
+from typing import List, Set, Tuple, Dict, Union
 
 import numpy as np
 import pandas as pd
@@ -85,7 +85,7 @@ def circle(diameter, offset_x=0.0, offset_y=0.0, sides=360) -> List[Tuple]:
 
 
 class Section:
-    materials: List[Material]
+    materials: Set[Material]
     polygons: Dict[Material, Polygon]  # from materials to polygons
 
     # Properties need to be calculated on request
@@ -94,10 +94,18 @@ class Section:
 
     def __init__(self, polygons: Dict):
         self.polygons = polygons
-        self.materials = list(polygons.keys())
+        self.materials = polygons.keys()
 
     def __add__(self, other):
-        return Section(self.polygons | other.polygons)
+        merged_polygons = {}
+        for material in self.materials | other.materials:
+            if material in self.materials and material in other.materials:
+                merged_polygons[material] = self.polygons[material].union(other.polygons[material])
+            elif material in self.materials:
+                merged_polygons[material] = self.polygons[material]
+            else:
+                merged_polygons[material] = other.polygons[material]
+        return Section(merged_polygons)
 
     def get_y_limits(self):
         # Find bounds of whole section
@@ -176,27 +184,13 @@ class Section:
             return steel_stress
 
         def concrete_stress_fun(slice):
-            if concrete.confining_steel is not None:
-                if slice.strain < 0:
-                    concrete_stress = 0
-                elif slice.strain < concrete.top_strain:
-                    concrete_stress = concrete.youngs_modulus * slice.strain - (
-                                concrete.youngs_modulus - concrete.confined_youngs_modulus) ** 2 / (
-                                                  4 * concrete.strength) * slice.strain ** 2
-                elif slice.strain < concrete.ultimate_strain:
-                    concrete_stress = concrete.strength + concrete.confined_youngs_modulus * slice.strain
-                else:
-                    concrete_stress = 0
-            else:
-                if slice.strain < 0:
-                    concrete_stress = 0
-                elif slice.strain < concrete.critical_strain:
-                    concrete_stress = concrete.design_strength * (
-                                1 - (1 - slice.strain / concrete.critical_strain) ** concrete.n)
-                elif slice.strain < concrete.ultimate_strain:
-                    concrete_stress = concrete.design_strength
-                else:
-                    concrete_stress = 0
+            if slice.strain < 0:
+                concrete_stress = 0
+            elif slice.strain < concrete.critical_strain:
+                concrete_stress = concrete.design_strength * (
+                             1 - (1 - slice.strain / concrete.critical_strain) ** concrete.n)
+            else:   # slice.strain < concrete.ultimate_strain:
+                concrete_stress = concrete.design_strength
             return concrete_stress
 
         self.slices['strain'] = self.slices.apply(strain_fun, axis=1)
@@ -217,6 +211,7 @@ class Section:
         return total_force, sum_force
 
     def calculate_neutral_axis(self, axial_force: float, concrete: Concrete, steel: Material):
+        max_y = self.get_y_limits()
         # Returns total force for an assumed neutral axis
         def optim_fun(guess: float) -> float:
             self.neutral_axis = guess
@@ -225,10 +220,15 @@ class Section:
 
         optim_results = scipy.optimize.root_scalar(
             optim_fun,
-            x0=0.01,
-            x1=0.02
+            x0=0.3,
+            x1=0.2
         )
         self.neutral_axis = optim_results.root
+
+        # if optim_results.root < max_y:
+        #     self.neutral_axis = optim_results.root
+        # else:
+        #     self.neutral_axis = max_y
 
 
 class HollowRectangular(Section):

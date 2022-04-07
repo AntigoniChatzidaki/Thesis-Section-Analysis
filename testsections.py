@@ -8,8 +8,8 @@ from Materials import Material, Concrete
 from Sections import Rectangular, Section, HollowRectangular
 
 frp = Material('FRP', 600e6, 80e9, 'black')
-concrete = Concrete('Concrete', 37e9, 50e6, 'gray', confining_steel=False, frp=frp)
-steel = Material('Steel', 190e9, 450e6, 'blue')  # Pa
+concrete = Concrete('Concrete', 37e9, 40e6, 'gray', confining_steel=False, frp=frp)
+steel = Material('Steel', 200e9,500e6, 'blue')  # Pa
 
 
 # def neutral_axis_optim(section: Section, y_neutral: float) -> Tuple[float, float]:
