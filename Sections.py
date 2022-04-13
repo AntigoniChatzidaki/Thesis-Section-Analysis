@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import scipy
 import shapely.geometry
-from shapely.geometry import MultiPoint, Polygon, MultiPolygon
+from shapely.geometry import MultiPoint, Polygon, MultiPolygon, LinearRing
 from descartes import PolygonPatch
 import matplotlib.pyplot as plt
 
@@ -27,6 +27,23 @@ def plot_polygon(polygon: Union[Polygon, MultiPolygon], ax: plt.Axes, color: str
     patch = PolygonPatch(polygon, facecolor=color, linewidth=0)
     ax.add_patch(patch)
 
+def second_moment_of_area(ring: LinearRing) -> Dict[str, float]:
+    xc, yc = ring.centroid.coords[0]
+    Ix, Iy, Ixy = 0, 0, 0
+    coords = ring.coords
+    for (x1, y1), (x2, y2) in zip(coords, coords[1:] + [coords[0]]):
+        x1 -= xc
+        x2 -= xc
+        y1 -= yc
+        y2 -= yc
+        v = x1 * y2 - x2 * y1
+        Ix += v * (y1 ** 2 + y1 * y2 + y2 ** 2)
+        Iy += v * (x1 ** 2 + x1 * x2 + x2 ** 2)
+        Ixy += v * (x1 * y2 + 2 * x1 * y1 + 2 * x2 * y2 + x2 * y1)
+    Ix /= 12
+    Iy /= 12
+    Ixy /= 24
+    return {'Ixx': np.abs(Ix), 'Iyy': np.abs(Iy), 'Ixy': np.abs(Ixy)}
 
 def rectangle(width, height, offset_x, offset_y) -> List[Tuple]:
     return [
@@ -85,8 +102,7 @@ def circle(diameter, offset_x=0.0, offset_y=0.0, sides=360) -> List[Tuple]:
 
 
 class Section:
-    materials: Set[Material]
-    polygons: Dict[Material, Polygon]  # from materials to polygons
+    polygons: Dict[Material, Union[Polygon, MultiPolygon]]  # from materials to polygons
 
     # Properties need to be calculated on request
     neutral_axis: float = None
@@ -94,7 +110,6 @@ class Section:
 
     def __init__(self, polygons: Dict):
         self.polygons = polygons
-        self.materials = polygons.keys()
 
     def __add__(self, other):
         merged_polygons = {}
@@ -106,6 +121,10 @@ class Section:
             else:
                 merged_polygons[material] = other.polygons[material]
         return Section(merged_polygons)
+
+    @property
+    def materials(self) -> Set:
+        return set(self.polygons.keys())
 
     def get_y_limits(self):
         # Find bounds of whole section
@@ -141,15 +160,14 @@ class Section:
             self.polygons[reinf_material] = self.polygons[reinf_material].union(reinforcement)
         else:
             self.polygons[reinf_material] = reinforcement
-            self.materials.append(reinf_material)
 
     def generate_slices(self, step=0.5e-3):
         min_y, max_y = self.get_y_limits()
 
-        heights = np.arange(min_y + step, max_y, step)
+        heights = np.arange(min_y + step, max_y + step, step)
         mid_heights = [y - step / 2 for y in heights]
         areas = {mat: [] for mat in self.materials}
-        area_slices = [self.get_areas_of_slice(y, step) for y in heights]
+        area_slices = [self.get_areas_of_slice(y-step, step) for y in heights]
         for slice in area_slices:
             for mat, area in slice.items():
                 areas[mat].append(area)
@@ -229,6 +247,28 @@ class Section:
         #     self.neutral_axis = optim_results.root
         # else:
         #     self.neutral_axis = max_y
+
+    @property
+    def second_moments_of_area(self) -> Dict[Material, Dict[str, float]]:
+        def _net_second_moment(polygon: Polygon):
+            exterior = second_moment_of_area(polygon.exterior)
+            interiors = [second_moment_of_area(interior) for interior in polygon.interiors]
+            return {
+                key: exterior[key] - sum([interior[key] for interior in interiors])
+                for key in exterior.keys()
+            }
+        out = {}
+        for material, polygons in self.polygons.items():
+            if type(polygons) is MultiPolygon:
+                moments = [_net_second_moment(polygon) for polygon in polygons.geoms]
+                out[material] = moments[0]
+                for moment in moments[1:]:
+                    for key, val in moment.items():
+                        out[material][key] += val
+            else:
+                out[material] = _net_second_moment(polygons)
+        return out
+
 
 
 class HollowRectangular(Section):

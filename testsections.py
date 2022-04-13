@@ -7,7 +7,7 @@ sns.set_style()
 from Materials import Material, Concrete
 from Sections import Rectangular, Section, HollowRectangular
 
-frp = Material('FRP', 600e6, 80e9, 'black')
+# frp = Material('FRP', 600e6, 80e9, 'black')
 concrete = Concrete('Concrete', 37e9, 40e6, 'gray', confining_steel=False, frp=frp)
 steel = Material('Steel', 200e9,500e6, 'blue')  # Pa
 

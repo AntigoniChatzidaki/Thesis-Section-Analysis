@@ -2,4 +2,4 @@
 /bkup*
 /.ipynb_checkpoints/
 /__pycache__/
-
+output.csv
