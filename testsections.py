@@ -38,20 +38,20 @@ steel = Material('Steel', 200e9,500e6, 'blue')  # Pa
 #             #y_centroid = slice.centroid.y
 #         strain_slice = concrete.ultimate_strain / y_neutral * (y_neutral - y_centroid)
 #         # steel stress
-#         if abs(strain_slice) < steel.strength / steel.youngs_modulus:
+#         if abs(strain_slice) < steel.characteristic_strength / steel.youngs_modulus:
 #                 steel_stress = strain_slice / steel.youngs_modulus
 #         else:
-#             steel_stress = steel.strength * abs(strain_slice) / strain_slice
+#             steel_stress = steel.characteristic_strength * abs(strain_slice) / strain_slice
 #         # concrete stress
-#         if concrete.confining_steel:
+#         if concrete.conf_steel:
 #             if strain_slice < 0:
 #                 concrete_stress = 0
 #             elif strain_slice < concrete.top_strain:
 #                 concrete_stress = concrete.youngs_modulus * strain_slice - (
 #                             concrete.youngs_modulus - concrete.confined_youngs_modulus) ** 2 / (
-#                                               4 * concrete.strength) * strain_slice ** 2
+#                                               4 * concrete.characteristic_strength) * strain_slice ** 2
 #             elif strain_slice < concrete.ultimate_strain:
-#                 concrete_stress = concrete.strength + concrete.confined_youngs_modulus * strain_slice
+#                 concrete_stress = concrete.characteristic_strength + concrete.confined_youngs_modulus * strain_slice
 #             else:
 #                 concrete_stress = 0
 #         else:
