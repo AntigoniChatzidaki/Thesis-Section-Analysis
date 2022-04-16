@@ -33,12 +33,17 @@ class Concrete(Material):
     total_height: float = None
     ultimate_strain: float = None
     critical_strain: float = None
-    top_strain: float = None
-    confined_youngs_modulus: float = None
     design_strength: float = None
     n: float = None
 
-    def __init__(self, name, youngs_modulus, strength, color, confining_steel=None, reinf_steel=None):
+    def __init__(self, name, unconfined_youngs_modulus, strength, color, reinf_steel=None, confining_steel=None,
+                 moment_sls_uls: float = 0, phi_t: float = 3):
+        self.unconfined_youngs_modulus = unconfined_youngs_modulus
+        if confining_steel is None:
+            youngs_modulus = unconfined_youngs_modulus
+        else:
+            youngs_modulus = unconfined_youngs_modulus * 1 / (1 + 0.5 * moment_sls_uls * phi_t)
+
         super().__init__(name, youngs_modulus, strength, color)
         self.conf_steel = confining_steel
         self.reinf_steel = reinf_steel
@@ -54,21 +59,11 @@ class Concrete(Material):
             n = 1.4 + 23.4 * ((90 - design_strength / 1e6) / 100) ** 4
             e_cu2 = (2.6 + 35 * ((90 - design_strength / 1e6) / 100) ** 4) / 1000
             e_c2 = (2.0 + 0.085 * (design_strength / 1e6 - 50) ** 0.53) / 1000
-        if self.conf_steel is None:
-            total_height = self.concrete_height
-            self.ultimate_strain = e_cu2
-            self.critical_strain = e_c2
-            self.total_height = total_height
-            self.design_strength = design_strength
-            self.n = n
-        else:
-            total_height = self.concrete_height
-            self.ultimate_strain = e_cu2
-            self.critical_strain = e_c2
-            self.total_height = total_height
-            self.design_strength = design_strength
-            self.n = n
-        self.total_height = total_height
+        self.ultimate_strain = e_cu2
+        self.critical_strain = e_c2
+        self.design_strength = design_strength
+        self.n = n
+        self.total_height = self.concrete_height
 
     # def ultimate_strain(self):
     #     return self.ultimate_strain

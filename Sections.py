@@ -149,6 +149,28 @@ class Section:
         return Section(merged_polygons)
 
     @property
+    def second_moments_of_area(self) -> Dict[Material, Dict[str, float]]:
+        def _net_second_moment(polygon: Polygon):
+            exterior = second_moment_of_area(polygon.exterior)
+            interiors = [second_moment_of_area(interior) for interior in polygon.interiors]
+            return {
+                key: exterior[key] - sum([interior[key] for interior in interiors])
+                for key in exterior.keys()
+            }
+
+        out = {}
+        for material, polygons in self.polygons.items():
+            if type(polygons) is MultiPolygon:
+                moments = [_net_second_moment(polygon) for polygon in polygons.geoms]
+                out[material] = moments[0]
+                for moment in moments[1:]:
+                    for key, val in moment.items():
+                        out[material][key] += val
+            else:
+                out[material] = _net_second_moment(polygons)
+        return out
+
+    @property
     def materials(self) -> Set:
         return set(self.polygons.keys())
 
@@ -206,17 +228,32 @@ class Section:
             'reinf_steel_area': areas.get(self.reinf_steel, np.zeros(len(heights))),
             'conf_steel_area': areas.get(self.conf_steel, np.zeros(len(heights))),
         })
-        # dict = {'height': heights, 'mid_height': mid_heights}
-        # if self.concrete is not None:
-        #     dict |= {'concrete_area': self.polygons[self.concrete].area}
-        # if self.reinf_steel is not None:
-        #     dict |= {'reinf_steel_area': self.polygons[self.reinf_steel].area}
-        # if self.reinf_steel is not None:
-        #     dict |= {'confining_steel_area': self.polygons[self.reinf_steel].area}
-        # self.slices = pd.DataFrame(dict)
 
-    def calculate_forces(self, axial_force: float, confined_factor_h_a: float = 0, confined_factor_h_c: float = 0.0,
-                         outer_thickness: float = 0.0, outer_depth: float = 0.0):
+    @property
+    def characteristic_force_plastic(self):
+        characteristic_force_plastic = self.slices.concrete_area.sum() * self.concrete.characteristic_strength
+        if self.conf_steel is not None:
+            characteristic_force_plastic += self.slices.conf_steel_area.sum() * self.conf_steel.characteristic_strength
+        if self.reinf_steel is not None:
+            characteristic_force_plastic += self.slices.reinf_steel_area.sum() * self.reinf_steel.characteristic_strength
+        return characteristic_force_plastic
+
+    @property
+    def EI_eff_confined(self):
+        second_moments_of_area = self.second_moments_of_area
+        EI_eff = self.concrete.youngs_modulus * second_moments_of_area[self.concrete]['Ixx'] * 0.6
+        if self.conf_steel is not None:
+            EI_eff += self.conf_steel.youngs_modulus * second_moments_of_area[self.conf_steel]['Ixx']
+        if self.reinf_steel is not None:
+            EI_eff += self.reinf_steel.youngs_modulus * second_moments_of_area[self.reinf_steel]['Ixx']
+        return EI_eff
+
+
+    def calculate_forces(self, length: float, axial_force: float, max_moment: float, outer_thickness: float = 0.0, outer_depth: float = 0.0):
+        min_y, max_y = self.get_y_limits()
+        mid_height = (max_y + min_y) / 2
+        height = max_y - min_y
+
         if self.slices is None:
             raise RuntimeError("Need to generate slices first")
         if self.neutral_axis is None:
@@ -228,22 +265,22 @@ class Section:
         def reinf_steel_stress_fun(slice):
             if slice.reinf_steel_area > 0:
                 if abs(slice.strain) < self.reinf_steel.characteristic_strength / 1.15 / self.reinf_steel.youngs_modulus:
-                    steel_stress = slice.strain * self.reinf_steel.youngs_modulus
+                    reinf_steel_stress = slice.strain * self.reinf_steel.youngs_modulus
                 else:
-                    steel_stress = self.reinf_steel.characteristic_strength / 1.15 * abs(slice.strain) / slice.strain
+                    reinf_steel_stress = self.reinf_steel.characteristic_strength / 1.15 * abs(slice.strain) / slice.strain
             else:
-                steel_stress = 0
-            return steel_stress
+                reinf_steel_stress = 0
+            return reinf_steel_stress
 
         def conf_steel_stress_fun(slice):
             if slice.conf_steel_area > 0:
                 if abs(slice.strain) < self.conf_steel.characteristic_strength / self.conf_steel.youngs_modulus:
-                    steel_stress = slice.strain * self.conf_steel.youngs_modulus
+                    conf_steel_stress = slice.strain * self.conf_steel.youngs_modulus
                 else:
-                    steel_stress = self.conf_steel.characteristic_strength * abs(slice.strain) / slice.strain
+                    conf_steel_stress = self.conf_steel.characteristic_strength * abs(slice.strain) / slice.strain
             else:
-                steel_stress = 0
-            return steel_stress
+                conf_steel_stress = 0
+            return conf_steel_stress
 
         def concrete_stress_fun(slice):
             if slice.strain < 0:
@@ -256,6 +293,7 @@ class Section:
             return concrete_stress
 
         self.slices['strain'] = self.slices.apply(strain_fun, axis=1)
+
         if self.concrete is not None:
             self.slices['concrete_stress'] = self.slices.apply(concrete_stress_fun, axis=1)
         if self.reinf_steel is not None:
@@ -264,41 +302,68 @@ class Section:
             self.slices['conf_steel_stress'] = self.slices.apply(conf_steel_stress_fun, axis=1)
 
         if self.conf_steel is None:
-            self.slices['concrete_force'] = self.slices.concrete_stress * self.slices.concrete_area
-            self.slices['reinf_steel_force'] = self.slices.reinf_steel_stress * self.slices.reinf_steel_area
-            self.slices['conf_steel_force'] = self.slices.conf_steel_stress * self.slices.conf_steel_area
+            if self.concrete is not None:
+                self.slices['concrete_force'] = np.nan_to_num(self.slices.concrete_stress * self.slices.concrete_area)
+            if self.reinf_steel is not None:
+                self.slices['reinf_steel_force'] = np.nan_to_num(self.slices.reinf_steel_stress * self.slices.reinf_steel_area)
+            self.slices['conf_steel_force'] = 0
 
         else:
-            self.slices['concrete_force'] = self.slices.concrete_stress * self.slices.concrete_area * \
-                                            (1 + confined_factor_h_c * outer_thickness * outer_depth *
-                                             self.slices.conf_steel_stress / self.slices.concrete_stress)
-            self.slices['reinf_steel_force'] = self.slices.reinf_steel_stress * self.slices.reinf_steel_area
-            self.slices['conf_steel_force'] = (self.slices.conf_steel_stress * self.slices.conf_steel_area *
-                                              confined_factor_h_a)
+            if axial_force > 0:
+                eccentricity_of_loading = (max_moment / axial_force)
+            else:
+                eccentricity_of_loading = 0
+            self.eccentricity_depth = eccentricity_of_loading / height
+            critical_force = self.EI_eff_confined * np.pi**2 / length**2
+            self.relative_slenderness = np.sqrt(self.characteristic_force_plastic / critical_force)
 
-        self.slices[
-            'total_force'] = self.slices.concrete_force + self.slices.reinf_steel_force + self.slices.conf_steel_force
-        min_y, max_y = self.get_y_limits()
-        mid_height = (max_y + min_y) / 2
+            if self.eccentricity_depth <= 0.1:
+                confined_factor_h_a_0 = min( 0.25 * (3 + 2 * self.relative_slenderness) , 1)
+                confined_factor_h_c_0 = max( 4.9 - 18.5 * self.relative_slenderness + 17*self.relative_slenderness**2,0)
+                self.confined_factor_h_a = confined_factor_h_a_0 + (1+ confined_factor_h_a_0) * 10 * self.eccentricity_depth
+                self.confined_factor_h_c = confined_factor_h_c_0 * (1 - 10 * self.eccentricity_depth)
+            else:
+                self.confined_factor_h_a = 1
+                self.confined_factor_h_c = 0
+
+            self.slices['concrete_force'] = np.nan_to_num(
+                self.slices.concrete_stress * self.slices.concrete_area *
+                (1 + self.confined_factor_h_c * outer_thickness * outer_depth *
+                 self.slices.conf_steel_stress / self.slices.concrete_stress)
+            )
+
+            if self.reinf_steel is not None:
+                self.slices['reinf_steel_force'] = np.nan_to_num(
+                    self.slices.reinf_steel_stress * self.slices.reinf_steel_area
+                )
+
+            else:
+                self.slices['reinf_steel_force'] = 0
+            self.slices['conf_steel_force'] = np.nan_to_num(
+                (self.slices.conf_steel_stress * self.slices.conf_steel_area * self.confined_factor_h_a)
+            )
+
+        self.slices['total_force'] = self.slices.concrete_force + self.slices.reinf_steel_force + self.slices.conf_steel_force
         self.slices['total_moment'] = self.slices.total_force * (mid_height - self.slices.mid_height)
         # self.slices['steel_moment'] = self.slices.steel_force * (mid_height - self.slices.mid_height)
 
         total_force = self.slices.total_force.sum()
         sum_force = total_force - axial_force
 
+
+
+        # return (total_force, sum_force, characteristic_force_plastic, relative_slenderness, eccentricity_depth,
+        #        confined_factor_h_a, confined_factor_h_c)
+
         return total_force, sum_force
 
-    def calculate_neutral_axis(self, axial_force: float, confined_factor_h_a: float = 0.0,
-                               confined_factor_h_c: float = 0.0, outer_thickness: float = 0.0,
-                               outer_depth: float = 0.0):
+    def calculate_neutral_axis(self, length:float, axial_force: float, max_moment: float, outer_thickness: float = 0.0, outer_depth: float = 0.0):
         max_y = self.get_y_limits()
 
         # Returns total force for an assumed neutral axis
         def optim_fun(guess: float) -> float:
             self.neutral_axis = guess
-            total_force, sum_force = self.calculate_forces(axial_force, confined_factor_h_a,
-                               confined_factor_h_c, outer_thickness,
-                               outer_depth)
+            total_force, sum_force = self.calculate_forces(length, axial_force, max_moment, outer_thickness, outer_depth)
             return sum_force
 
         optim_results = scipy.optimize.root_scalar(
@@ -313,30 +378,9 @@ class Section:
         # else:
         #     self.neutral_axis = max_y
 
-    @property
-    def second_moments_of_area(self) -> Dict[Material, Dict[str, float]]:
-        def _net_second_moment(polygon: Polygon):
-            exterior = second_moment_of_area(polygon.exterior)
-            interiors = [second_moment_of_area(interior) for interior in polygon.interiors]
-            return {
-                key: exterior[key] - sum([interior[key] for interior in interiors])
-                for key in exterior.keys()
-            }
-
-        out = {}
-        for material, polygons in self.polygons.items():
-            if type(polygons) is MultiPolygon:
-                moments = [_net_second_moment(polygon) for polygon in polygons.geoms]
-                out[material] = moments[0]
-                for moment in moments[1:]:
-                    for key, val in moment.items():
-                        out[material][key] += val
-            else:
-                out[material] = _net_second_moment(polygons)
-        return out
 
     @property
-    def characteristic_load(self) -> float:
+    def plastic_load(self) -> float:
         if self.concrete is None:
             concrete_area = 0
             concrete_characteristic_strength = 0
@@ -356,9 +400,6 @@ class Section:
             reinf_steel_area = self.polygons[self.reinf_steel].area
             reinf_steel_characteristic_strength = self.reinf_steel.characteristic_strength
 
-        return (concrete_area * concrete_characteristic_strength
-                + conf_steel_area * conf_steel_characteristic_strength
-                + reinf_steel_area * reinf_steel_characteristic_strength)
 
 
 class HollowRectangular(Section):
