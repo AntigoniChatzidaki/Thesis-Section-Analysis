@@ -2,8 +2,9 @@ from typing import List, Set, Tuple, Dict, Union
 
 import numpy as np
 import pandas as pd
-import scipy
+from scipy import optimize
 import shapely.geometry
+from shapely import affinity
 from shapely.geometry import MultiPoint, Polygon, MultiPolygon, LinearRing
 from descartes import PolygonPatch
 import matplotlib.pyplot as plt
@@ -11,10 +12,13 @@ import matplotlib.pyplot as plt
 from Materials import Material, Concrete, Steel
 
 
-def plot_polygon(polygon: Union[Polygon, MultiPolygon], ax: plt.Axes, color: str):
+def plot_polygon(
+        polygon: Union[Polygon, MultiPolygon], ax: plt.Axes, color: str,
+        offset: Tuple[float] = (0.0, 0.0), scale: Tuple[float] = (1.0, 1.0)
+):
     if type(polygon) is shapely.geometry.MultiPolygon:
         for p in polygon.geoms:
-            plot_polygon(p, ax, color)
+            plot_polygon(p, ax, color, offset, scale)
         return
     # ext_x, ext_y = [list(x) for x in polygon.exterior.xy]
     # int_x = []
@@ -24,7 +28,9 @@ def plot_polygon(polygon: Union[Polygon, MultiPolygon], ax: plt.Axes, color: str
     #     int_x += list(x)
     #     int_y += list(y)
     # ax.fill(ext_x + int_x, ext_y + int_y, color=color)
-    patch = PolygonPatch(polygon, facecolor=color, linewidth=0)
+    trans_polygon = affinity.scale(polygon, scale[0], scale[1])
+    trans_polygon = affinity.translate(trans_polygon, offset[0], offset[1])
+    patch = PolygonPatch(trans_polygon, facecolor=color, linewidth=0)
     ax.add_patch(patch)
 
 
@@ -196,9 +202,9 @@ class Section:
                 out[material] = slice.intersection(polygon).area
         return out
 
-    def plot(self, ax):
+    def plot(self, ax, offset: Tuple[float] = (0.0, 0.0), scale: Tuple[float] = (1.0, 1.0)):
         for material, polygon in self.polygons.items():
-            plot_polygon(polygon.buffer(0), ax, material.color)
+            plot_polygon(polygon.buffer(0), ax, material.color, offset, scale)
 
     def add_reinforcements(self, reinf_material, diameter, points: List[Tuple]):
         reinforcement = MultiPoint(points).buffer(diameter / 2)
@@ -212,6 +218,7 @@ class Section:
 
     def generate_slices(self, step=0.5e-3):
         min_y, max_y = self.get_y_limits()
+        print(min_y, max_y)
 
         heights = np.arange(min_y + step, max_y + step, step)
         mid_heights = [y - step / 2 for y in heights]
@@ -231,6 +238,15 @@ class Section:
 
     @property
     def characteristic_force_plastic(self):
+        # if self.conf_steel is not None:
+        #     characteristic_force_plastic = (self.slices.concrete_area.sum() * self.concrete.characteristic_strength *
+        #                                     (1 + self.confined_factor_h_c * self.height * self.outer_thickness *
+        #                                      self.conf_steel.characteristic_strength / self.concrete.characteristic_strength))
+        #     if self.conf_steel is not None:
+        #         characteristic_force_plastic += self.slices.conf_steel_area.sum() * self.conf_steel.characteristic_strength * self.confined_factor_h_a
+        #     if self.reinf_steel is not None:
+        #         characteristic_force_plastic += self.slices.reinf_steel_area.sum() * self.reinf_steel.characteristic_strength
+        # else:
         characteristic_force_plastic = self.slices.concrete_area.sum() * self.concrete.characteristic_strength
         if self.conf_steel is not None:
             characteristic_force_plastic += self.slices.conf_steel_area.sum() * self.conf_steel.characteristic_strength
@@ -249,7 +265,89 @@ class Section:
         return EI_eff
 
 
-    def calculate_forces(self, length: float, axial_force: float, max_moment: float, outer_thickness: float = 0.0, outer_depth: float = 0.0):
+    def confinement_and_second_order_effect(self, length: float, axial_force: float, max_moment_m_2: float, moment_m_1: float):
+        min_y, max_y = self.get_y_limits()
+        height = max_y - min_y
+        second_moments_of_area = self.second_moments_of_area
+        self.axial_force = axial_force
+        reinf_steel_to_concrete_ratio = np.nan_to_num((self.slices.reinf_steel_area.sum()) /self.slices.concrete_area.sum())
+        if self.conf_steel is not None: # i.e. the section is confined
+            calibration_coef_K_o = 0.9
+            correction_coef_K_e_II = 0.5
+            EI_eff_II_second_order = calibration_coef_K_o * correction_coef_K_e_II * self.concrete.youngs_modulus * \
+                                     second_moments_of_area[self.concrete]['Ixx']
+            if self.conf_steel is not None:
+                EI_eff_II_second_order += calibration_coef_K_o * self.conf_steel.youngs_modulus * \
+                                          second_moments_of_area[self.conf_steel]['Ixx']
+            if self.reinf_steel is not None:
+                EI_eff_II_second_order += calibration_coef_K_o * self.reinf_steel.youngs_modulus * \
+                                          second_moments_of_area[self.reinf_steel]['Ixx']
+            if axial_force > 0:
+                eccentricity_of_loading = (max_moment_m_2 / axial_force)
+            else:
+                eccentricity_of_loading = 0
+            self.eccentricity_depth = eccentricity_of_loading / height
+            critical_force = self.EI_eff_confined * np.pi**2 / length**2
+            eff_critical_force = EI_eff_II_second_order * np.pi**2 / length**2
+            self.elastic_buckling_load_to_applied_ratio = eff_critical_force / axial_force
+            self.relative_slenderness = np.sqrt(self.characteristic_force_plastic / critical_force)
+
+            if self.eccentricity_depth <= 0.1:
+                confined_factor_h_a_0 = min( 0.25 * (3 + 2 * self.relative_slenderness), 1)
+                confined_factor_h_c_0 = max( 4.9 - 18.5 * self.relative_slenderness + 17*self.relative_slenderness**2,0)
+                self.confined_factor_h_a = confined_factor_h_a_0 + (1+ confined_factor_h_a_0) * 10 * self.eccentricity_depth
+                self.confined_factor_h_c = confined_factor_h_c_0 * (1 - 10 * self.eccentricity_depth)
+            else:
+                self.confined_factor_h_a = 1
+                self.confined_factor_h_c = 0
+            if axial_force <=0:
+                beta_conf = max(0.66 + 0.44 * max_moment_m_2 / moment_m_1, 0.44)
+            else:
+                beta_conf = 1
+            coefficient_K = max(beta_conf/(1 + axial_force/ eff_critical_force), 1)
+            if reinf_steel_to_concrete_ratio < 0.3:
+                equivalent_member_imperfection_edo = length / 300
+            else:
+                equivalent_member_imperfection_edo = length / 200
+            self.second_order_moment = abs(coefficient_K * axial_force * equivalent_member_imperfection_edo) # imperfection
+            self.first_order_moment_modified = abs(coefficient_K * max_moment_m_2)
+            self.second_order_effect_design_moment_M_ed = (self.second_order_moment
+                                                               + self.first_order_moment_modified)
+        else:
+            radius_of_gyration_concrete = np.sqrt(second_moments_of_area[self.concrete]['Ixx'] / self.slices.concrete_area.sum())
+            radius_of_gyration_reinf_steel = np.sqrt(second_moments_of_area[self.reinf_steel]['Ixx']/ self.slices.reinf_steel_area.sum())
+            self.slenderness_unconf = length / radius_of_gyration_concrete
+            beta_unconf = 0.35 + self.concrete.characteristic_strength/200e6 - self.slenderness_unconf/150
+            eff_creep_ratio_phi_eff = self.concrete.moment_sls_uls * self.concrete.phi_t
+            factor_accounting_for_creep_K_phi = max(1 + beta_unconf * eff_creep_ratio_phi_eff, 1)
+            relative_axial_force_n = axial_force / (self.slices.concrete_area.sum() * self.concrete.design_strength)
+            omega = ((self.slices.reinf_steel_area.sum() * self.reinf_steel.characteristic_strength/1.15) /
+                    (self.slices.concrete_area.sum() * self.concrete.design_strength))
+            self.slenderness_limit_unconf = (20 * (1/ (1+0.2*eff_creep_ratio_phi_eff))*(np.sqrt(1+2*omega))*(1.7-moment_m_1/max_moment_m_2))/np.sqrt(relative_axial_force_n)
+            n_u = 1 + omega
+            n_bal = 0.4 # EC2 5.8.8.3 (3)
+            effect_of_creep_factor_K_r = min ((n_u - relative_axial_force_n)/(n_u - n_bal), 1)
+            e_yd = self.reinf_steel.characteristic_strength/1.15 / self.reinf_steel.youngs_modulus
+            curvature_1_ro = e_yd /(0.45 *(height/2 + radius_of_gyration_reinf_steel))
+            curvature_1_r = effect_of_creep_factor_K_r * factor_accounting_for_creep_K_phi * curvature_1_ro
+            c_factor = 10  # EC2 - 5.8.8.2.(4)
+            self.deflection_e_2 = curvature_1_r * length **2 / c_factor
+            self.second_order_moment = abs(axial_force * self.deflection_e_2)
+            self.first_order_moment_modified = abs(max(0.4*max_moment_m_2, 0.6*max_moment_m_2 + 0.4*moment_m_1))
+            self.second_order_effect_design_moment_M_ed = self.first_order_moment_modified + self.second_order_moment
+            if axial_force / self.characteristic_force_plastic < 0.1:
+                self.factor_a = 1
+            elif  axial_force / self.characteristic_force_plastic < 0.7:
+                self.factor_a = (1+(1.5-1)/(0.7-0.1)*((axial_force / self.characteristic_force_plastic)-0.1))
+            elif axial_force / self.characteristic_force_plastic < 1.0:
+                self.factor_a = (1.5+(2-1.5)/(1-0.7)*((axial_force / self.characteristic_force_plastic)-0.7))
+            else:
+                self.factor_a = 2
+            print(axial_force / self.characteristic_force_plastic)
+            # effect of creep
+
+
+    def calculate_forces(self, axial_force: float, outer_thickness: float = 0.0):
         min_y, max_y = self.get_y_limits()
         mid_height = (max_y + min_y) / 2
         height = max_y - min_y
@@ -298,8 +396,12 @@ class Section:
             self.slices['concrete_stress'] = self.slices.apply(concrete_stress_fun, axis=1)
         if self.reinf_steel is not None:
             self.slices['reinf_steel_stress'] = self.slices.apply(reinf_steel_stress_fun, axis=1)
+        else:
+            self.slices['reinf_steel_stress'] = 0
         if self.conf_steel is not None:
             self.slices['conf_steel_stress'] = self.slices.apply(conf_steel_stress_fun, axis=1)
+        else:
+            self.slices['conf_steel_stress'] = 0
 
         if self.conf_steel is None:
             if self.concrete is not None:
@@ -309,26 +411,28 @@ class Section:
             self.slices['conf_steel_force'] = 0
 
         else:
-            if axial_force > 0:
-                eccentricity_of_loading = (max_moment / axial_force)
-            else:
-                eccentricity_of_loading = 0
-            self.eccentricity_depth = eccentricity_of_loading / height
-            critical_force = self.EI_eff_confined * np.pi**2 / length**2
-            self.relative_slenderness = np.sqrt(self.characteristic_force_plastic / critical_force)
-
-            if self.eccentricity_depth <= 0.1:
-                confined_factor_h_a_0 = min( 0.25 * (3 + 2 * self.relative_slenderness) , 1)
-                confined_factor_h_c_0 = max( 4.9 - 18.5 * self.relative_slenderness + 17*self.relative_slenderness**2,0)
-                self.confined_factor_h_a = confined_factor_h_a_0 + (1+ confined_factor_h_a_0) * 10 * self.eccentricity_depth
-                self.confined_factor_h_c = confined_factor_h_c_0 * (1 - 10 * self.eccentricity_depth)
-            else:
-                self.confined_factor_h_a = 1
-                self.confined_factor_h_c = 0
+            # if axial_force > 0:
+            #     eccentricity_of_loading = (max_moment / axial_force)
+            # else:
+            #     eccentricity_of_loading = 0
+            # self.eccentricity_depth = eccentricity_of_loading / height
+            # critical_force = self.EI_eff_confined * np.pi**2 / length**2
+            # eff_critical_force = self.EI_eff_II_second_order * np.pi**2 / length**2
+            # self.elastic_buckling_load_to_applied_ratio = eff_critical_force / axial_force
+            # self.relative_slenderness = np.sqrt(self.characteristic_force_plastic / critical_force)
+            #
+            # if self.eccentricity_depth <= 0.1:
+            #     confined_factor_h_a_0 = min( 0.25 * (3 + 2 * self.relative_slenderness) , 1)
+            #     confined_factor_h_c_0 = max( 4.9 - 18.5 * self.relative_slenderness + 17*self.relative_slenderness**2,0)
+            #     self.confined_factor_h_a = confined_factor_h_a_0 + (1+ confined_factor_h_a_0) * 10 * self.eccentricity_depth
+            #     self.confined_factor_h_c = confined_factor_h_c_0 * (1 - 10 * self.eccentricity_depth)
+            # else:
+            #     self.confined_factor_h_a = 1
+            #     self.confined_factor_h_c = 0
 
             self.slices['concrete_force'] = np.nan_to_num(
                 self.slices.concrete_stress * self.slices.concrete_area *
-                (1 + self.confined_factor_h_c * outer_thickness * outer_depth *
+                (1 + self.confined_factor_h_c * outer_thickness / height *
                  self.slices.conf_steel_stress / self.slices.concrete_stress)
             )
 
@@ -342,6 +446,13 @@ class Section:
             self.slices['conf_steel_force'] = np.nan_to_num(
                 (self.slices.conf_steel_stress * self.slices.conf_steel_area * self.confined_factor_h_a)
             )
+            self.max_characteristic_force = (self.slices.concrete_area.sum() * self.concrete.characteristic_strength *
+                                                 (1 + self.confined_factor_h_c * outer_thickness / height *
+                                                  self.conf_steel.characteristic_strength / self.concrete.characteristic_strength))
+            if self.conf_steel is not None:
+                self.max_characteristic_force += self.slices.conf_steel_area.sum() * self.conf_steel.characteristic_strength * self.confined_factor_h_a
+            if self.reinf_steel is not None:
+                self.max_characteristic_force += self.slices.reinf_steel_area.sum() * self.reinf_steel.characteristic_strength
 
         self.slices['total_force'] = self.slices.concrete_force + self.slices.reinf_steel_force + self.slices.conf_steel_force
         self.slices['total_moment'] = self.slices.total_force * (mid_height - self.slices.mid_height)
@@ -354,19 +465,20 @@ class Section:
 
         # return (total_force, sum_force, characteristic_force_plastic, relative_slenderness, eccentricity_depth,
         #        confined_factor_h_a, confined_factor_h_c)
-
+        self.height = height
+        self.outer_thickness = outer_thickness
         return total_force, sum_force
 
-    def calculate_neutral_axis(self, length:float, axial_force: float, max_moment: float, outer_thickness: float = 0.0, outer_depth: float = 0.0):
+    def calculate_neutral_axis(self, axial_force: float, outer_thickness: float = 0.0):
         max_y = self.get_y_limits()
 
         # Returns total force for an assumed neutral axis
         def optim_fun(guess: float) -> float:
             self.neutral_axis = guess
-            total_force, sum_force = self.calculate_forces(length, axial_force, max_moment, outer_thickness, outer_depth)
+            total_force, sum_force = self.calculate_forces(axial_force, outer_thickness)
             return sum_force
 
-        optim_results = scipy.optimize.root_scalar(
+        optim_results = optimize.root_scalar(
             optim_fun,
             x0=0.3,
             x1=0.2

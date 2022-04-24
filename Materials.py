@@ -41,15 +41,17 @@ class Concrete(Material):
         self.unconfined_youngs_modulus = unconfined_youngs_modulus
         if confining_steel is None:
             youngs_modulus = unconfined_youngs_modulus
+            a_cc = 0.85
         else:
             youngs_modulus = unconfined_youngs_modulus * 1 / (1 + 0.5 * moment_sls_uls * phi_t)
+            a_cc = 1
 
         super().__init__(name, youngs_modulus, strength, color)
         self.conf_steel = confining_steel
         self.reinf_steel = reinf_steel
         # Values from eurocode
-        a_cc = 0.85
         gamma_c = 1.5
+
         design_strength = a_cc * self.characteristic_strength / gamma_c
         if design_strength / 1e6 < 50:
             n = 2
@@ -64,6 +66,8 @@ class Concrete(Material):
         self.design_strength = design_strength
         self.n = n
         self.total_height = self.concrete_height
+        self.phi_t = phi_t
+        self.moment_sls_uls = moment_sls_uls
 
     # def ultimate_strain(self):
     #     return self.ultimate_strain
