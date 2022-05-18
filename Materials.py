@@ -36,7 +36,7 @@ class Concrete(Material):
     design_strength: float = None
     n: float = None
 
-    def __init__(self, name, unconfined_youngs_modulus, strength, color, reinf_steel=None, confining_steel=None,
+    def __init__(self, name, unconfined_youngs_modulus, characteristic_strength, color, reinf_steel=None, confining_steel=None,
                  moment_sls_uls: float = 0, phi_t: float = 3):
         self.unconfined_youngs_modulus = unconfined_youngs_modulus
         if confining_steel is None:
@@ -46,7 +46,7 @@ class Concrete(Material):
             youngs_modulus = unconfined_youngs_modulus * 1 / (1 + 0.5 * moment_sls_uls * phi_t)
             a_cc = 1
 
-        super().__init__(name, youngs_modulus, strength, color)
+        super().__init__(name, youngs_modulus, characteristic_strength, color)
         self.conf_steel = confining_steel
         self.reinf_steel = reinf_steel
         # Values from eurocode
@@ -57,11 +57,17 @@ class Concrete(Material):
             n = 2
             e_cu2 = 0.0035
             e_c2 = 0.002
+            e_cu3 = 0.0035
+            e_c3 = 0.00175
         else:
-            n = 1.4 + 23.4 * ((90 - design_strength / 1e6) / 100) ** 4
-            e_cu2 = (2.6 + 35 * ((90 - design_strength / 1e6) / 100) ** 4) / 1000
-            e_c2 = (2.0 + 0.085 * (design_strength / 1e6 - 50) ** 0.53) / 1000
+            n = 1.4 + 23.4 * ((90 - characteristic_strength / 1e6) / 100) ** 4
+            e_cu2 = (2.6 + 35 * ((90 - characteristic_strength / 1e6) / 100) ** 4) / 1000
+            e_c2 = (2.0 + 0.085 * (characteristic_strength / 1e6 - 50) ** 0.53) / 1000
+            e_cu3 = e_cu2
+            e_c3 = (1.75 + 0.55*((characteristic_strength/1e6 -50)/40))
+
         self.ultimate_strain = e_cu2
+        self.ultimate_strain_3 = e_cu3
         self.critical_strain = e_c2
         self.design_strength = design_strength
         self.n = n

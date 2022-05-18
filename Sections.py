@@ -238,15 +238,6 @@ class Section:
 
     @property
     def characteristic_force_plastic(self):
-        # if self.conf_steel is not None:
-        #     characteristic_force_plastic = (self.slices.concrete_area.sum() * self.concrete.characteristic_strength *
-        #                                     (1 + self.confined_factor_h_c * self.height * self.outer_thickness *
-        #                                      self.conf_steel.characteristic_strength / self.concrete.characteristic_strength))
-        #     if self.conf_steel is not None:
-        #         characteristic_force_plastic += self.slices.conf_steel_area.sum() * self.conf_steel.characteristic_strength * self.confined_factor_h_a
-        #     if self.reinf_steel is not None:
-        #         characteristic_force_plastic += self.slices.reinf_steel_area.sum() * self.reinf_steel.characteristic_strength
-        # else:
         characteristic_force_plastic = self.slices.concrete_area.sum() * self.concrete.characteristic_strength
         if self.conf_steel is not None:
             characteristic_force_plastic += self.slices.conf_steel_area.sum() * self.conf_steel.characteristic_strength
